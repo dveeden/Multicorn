@@ -40,6 +40,11 @@ void		_PG_fini(void);
 /*
  * FDW functions declarations
  */
+static AttrNumber multicornGetForeignRelWidth(PlannerInfo *root,
+							RelOptInfo *baserel,
+							Relation foreignrel,
+							bool inhparent,
+							List *targetList);
 static void multicornGetForeignRelSize(PlannerInfo *root,
 						   RelOptInfo *baserel,
 						   Oid foreigntableid);
@@ -58,6 +63,24 @@ static void multicornBeginForeignScan(ForeignScanState *node, int eflags);
 static TupleTableSlot *multicornIterateForeignScan(ForeignScanState *node);
 static void multicornReScanForeignScan(ForeignScanState *node);
 static void multicornEndForeignScan(ForeignScanState *node);
+static List *multicornPlanForeignModify(PlannerInfo *root,
+						   ModifyTable *plan,
+						   Index resultRelation,
+						   Plan *subplan);
+static void multicornBeginForeignModify(ModifyTableState *mtstate,
+							ResultRelInfo *resultRelInfo,
+							List *fdw_private,
+							Plan *subplan,
+							int eflags);
+static int multicornExecForeignInsert(ResultRelInfo *resultRelInfo,
+						   HeapTuple tuple);
+static int multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
+						   Datum rowid);
+static int multicornExecForeignUpdate(ResultRelInfo *resultRelInfo,
+						   Datum rowid,
+						   HeapTuple tuple);
+static void multicornEndForeignModify(ResultRelInfo *resultRelInfo);
+
 
 /*	Helpers functions */
 void	   *serializePlanState(MulticornPlanState * planstate);
@@ -93,6 +116,15 @@ multicorn_handler(PG_FUNCTION_ARGS)
 	fdw_routine->ReScanForeignScan = multicornReScanForeignScan;
 	fdw_routine->EndForeignScan = multicornEndForeignScan;
 
+	/* Code for 9.3 */
+	fdw_routine->GetForeignRelWidth = multicornGetForeignRelWidth;
+	/* Writable API */
+	fdw_routine->PlanForeignModify = multicornPlanForeignModify;
+	fdw_routine->BeginForeignModify = multicornBeginForeignModify;
+	fdw_routine->ExecForeignInsert = multicornExecForeignInsert;
+	fdw_routine->ExecForeignDelete = multicornExecForeignDelete;
+	fdw_routine->ExecForeignUpdate = multicornExecForeignUpdate;
+	fdw_routine->EndForeignModify = multicornEndForeignModify;
 
 	PG_RETURN_POINTER(fdw_routine);
 }
@@ -140,6 +172,35 @@ multicorn_validator(PG_FUNCTION_ARGS)
 }
 
 /*
+ * multicornGetForeignRelWidth
+ *		Gets the row widths, in number of attributes.
+ */
+static AttrNumber
+multicornGetForeignRelWidth(PlannerInfo *root,
+							RelOptInfo *baserel,
+							Relation foreignrel,
+							bool inhparent,
+							List *targetList)
+{
+	AttrNumber	rv;
+	MulticornPlanState *planstate = palloc0(sizeof(MulticornPlanState));
+
+	planstate->rowid_attnum = get_pseudo_rowid_column(baserel, targetList);
+	if (planstate->rowid_attnum != InvalidAttrNumber)
+	{
+		rv = planstate->rowid_attnum;
+	}
+	else
+	{
+		rv = RelationGetNumberOfAttributes(foreignrel);
+	}
+	planstate->numattrs = rv;
+	baserel->fdw_private = planstate;
+	return rv;
+}
+
+
+/*
  * multicornGetForeignRelSize
  *		Obtain relation size estimates for a foreign table.
  *		This is done by calling the
@@ -149,16 +210,14 @@ multicornGetForeignRelSize(PlannerInfo *root,
 						   RelOptInfo *baserel,
 						   Oid foreigntableid)
 {
-	MulticornPlanState *planstate = palloc0(sizeof(MulticornPlanState));
+	MulticornPlanState *planstate = baserel->fdw_private;
 	ForeignTable *ftable = GetForeignTable(foreigntableid);
 	ListCell   *lc;
-	baserel->fdw_private = planstate; 
 	planstate->foreigntableid = foreigntableid;
 	/* Initialize the conversion info array */
 	{
 		Relation	rel = RelationIdGetRelation(ftable->relid);
 		AttInMetadata *attinmeta = TupleDescGetAttInMetadata(rel->rd_att);
-		planstate->numattrs = RelationGetNumberOfAttributes(rel);
 		planstate->cinfos = palloc0(sizeof(ConversionInfo *) *
 									planstate->numattrs);
 		initConversioninfo(planstate->cinfos, attinmeta);
@@ -356,6 +415,79 @@ multicornEndForeignScan(ForeignScanState *node)
 		Py_DECREF(state->p_iterator);
 	}
 	state->p_iterator = NULL;
+}
+
+
+/*
+ * multicornPlanForeignModify
+ *		Plan a foreign write operation.
+ *		This is done by checking the "supported operations" attribute
+ *		on the python class.
+ */
+static List *
+multicornPlanForeignModify(PlannerInfo *root,
+						   ModifyTable *plan,
+						   Index resultRelation,
+						   Plan *subplan)
+{
+}
+
+/*
+ * multicornBeginForeignModify
+ *		Initialize a foreign write operation.
+ */
+static void
+multicornBeginForeignModify(ModifyTableState *mtstate,
+							ResultRelInfo *resultRelInfo,
+							List *fdw_private,
+							Plan *subplan,
+							int eflags)
+{
+}
+
+/*
+ * multicornExecForeignInsert
+ *		Execute a foreign insert operation
+ *		This is done by calling the python "insert" method.
+ */
+static int
+multicornExecForeignInsert(ResultRelInfo *resultRelInfo,
+						   HeapTuple tuple)
+{
+}
+
+/*
+ * multicornExecForeignDelete
+ *		Execute a foreign delete operation
+ *		This is done by calling the python "delete" method, with the opaque
+ *		rowid that was supplied.
+ */
+static int
+multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
+						   Datum rowid)
+{
+}
+
+/*
+ * multicornExecForeignUpdate
+ *		Execute a foreign update operation
+ *		This is done by calling the python "update" method, with the opaque
+ *		rowid that was supplied.
+ */
+static int
+multicornExecForeignUpdate(ResultRelInfo *resultRelInfo,
+						   Datum rowid,
+						   HeapTuple tuple)
+{
+}
+
+/*
+ * multicornEndForeignModify
+ *		Clean internal state after a modify operation.
+ */
+static void
+multicornEndForeignModify(ResultRelInfo *resultRelInfo)
+{
 }
 
 
