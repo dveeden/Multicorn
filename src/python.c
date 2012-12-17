@@ -653,9 +653,18 @@ pythonDictToTuple(PyObject *p_value,
 		if (p_object != NULL && p_object != Py_None)
 		{
 			resetStringInfo(state->buffer);
-			state->values[i] = pyobjectToDatum(p_object,
-											   state->buffer,
-											   state->cinfos[i]);
+			if (state->rowid_attnum >= 0 && i == state->rowid_attnum - 1)
+			{
+				/* Store the pyobject directly, since postgresql HAS to keep */
+				/* it safe for us. */
+				state->values[i] = (Datum) p_object;
+			}
+			else
+			{
+				state->values[i] = pyobjectToDatum(p_object,
+												   state->buffer,
+												   state->cinfos[i]);
+			}
 			if (state->values[i] == (Datum) NULL)
 			{
 				state->nulls[i] = true;
@@ -785,7 +794,8 @@ PyObject *
 datumNumberToPython(Datum datum, ConversionInfo * cinfo)
 {
 	ssize_t		numvalue = (ssize_t) DatumGetNumeric(datum);
-	char	   *tempvalue = (char *) DirectFunctionCall1(numeric_out, numvalue);
+	char	   *tempvalue = (char *) DirectFunctionCall1(numeric_out,
+														 numvalue);
 	PyObject   *buffer = PyString_FromString(tempvalue),
 			   *value = PyFloat_FromString(buffer, NULL);
 
@@ -818,7 +828,8 @@ datumTimestampToPython(Datum datum, ConversionInfo * cinfo)
 	fsec_t		fsec;
 
 	PyDateTime_IMPORT;
-	timestamp2tm(DatumGetTimestamp(datum), NULL, pg_tm_value, &fsec, NULL, NULL);
+	timestamp2tm(DatumGetTimestamp(datum), NULL, pg_tm_value, &fsec,
+				 NULL, NULL);
 	result = PyDateTime_FromDateAndTime(pg_tm_value->tm_year,
 										pg_tm_value->tm_mon,
 										pg_tm_value->tm_mday,
@@ -943,6 +954,7 @@ pathKeys(MulticornPlanState * state)
 			for (k = 0; k < state->numattrs; k++)
 			{
 				ConversionInfo *cinfo = state->cinfos[k];
+
 				if (p_key != Py_None &&
 					strcmp(cinfo->attrname, PyString_AsString(p_key)) == 0)
 				{
@@ -961,5 +973,60 @@ pathKeys(MulticornPlanState * state)
 		Py_DECREF(p_item);
 	}
 	Py_DECREF(p_pathkeys);
+	return result;
+}
+
+/*
+ * Returns the name of the attribute which should be used as a rowid.
+ */
+char *
+getRowIdColumn(PyObject *fdw_instance)
+{
+	PyObject   *value = PyObject_GetAttrString(fdw_instance, "rowid_column");
+	char	   *result;
+
+	errorCheck();
+	if (value == Py_None)
+	{
+		elog(ERROR, "This FDW does not support the writable API");
+	}
+	result = PyString_AsString(value);
+	Py_DECREF(value);
+	return result;
+}
+
+
+PyObject *
+heapTupleToPyObject(HeapTuple tuple, MulticornModifyState * state)
+{
+	PyObject   *result = PyDict_New();
+	TupleDesc	tupdesc = state->attinmeta->tupdesc;
+	int			i;
+
+	for (i = 0; i < tupdesc->natts; i++)
+	{
+		Form_pg_attribute attr = tupdesc->attrs[i];
+		bool		isnull;
+		Datum		value;
+		PyObject   *item;
+
+		if (attr->attisdropped)
+		{
+			continue;
+		}
+		value = heap_getattr(tuple, i + 1, state->attinmeta->tupdesc,
+							 &isnull);
+		if (isnull)
+		{
+			item = Py_None;
+		}
+		else
+		{
+			item = datumToPython(value, state->cinfos[i]->atttypoid,
+								 state->cinfos[i]);
+		}
+		PyDict_SetItemString(result, state->cinfos[i]->attrname, item);
+		Py_DECREF(item);
+	}
 	return result;
 }

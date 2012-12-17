@@ -10,9 +10,14 @@ class TestForeignDataWrapper(ForeignDataWrapper):
         super(TestForeignDataWrapper, self).__init__(options, columns)
         self.columns = columns
         self.test_type = options.get('test_type', None)
+        self._rowid_column = options.get('rowid_column', None)
         log_to_postgres(str(options))
         log_to_postgres(str(dict([(key, column.type_name) for key, column in
                                   columns.items()])))
+
+    @property
+    def rowid_column(self):
+        return self._rowid_column
 
     def execute(self, quals, columns):
         log_to_postgres(str(quals))
@@ -26,7 +31,7 @@ class TestForeignDataWrapper(ForeignDataWrapper):
                                               next(random_thing), index))
             else:
                 line = {}
-                for column_name in self.columns:
+                for column_name in columns:
                     if self.test_type == 'list':
                         line[column_name] = [column_name, next(random_thing),
                                              index]
@@ -54,3 +59,13 @@ class TestForeignDataWrapper(ForeignDataWrapper):
         if self.test_type == 'planner':
             return [(('test1',), 1)]
         return []
+
+    def update(self, rowid, values):
+        log_to_postgres("UPDATING: %s with %s" % (rowid, values))
+
+    def delete(self, rowid):
+        log_to_postgres("DELETING: %s" % rowid)
+
+    def insert(self, values):
+        log_to_postgres("INSERTING: %s" % values)
+

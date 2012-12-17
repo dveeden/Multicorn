@@ -75,9 +75,9 @@ static void multicornBeginForeignModify(ModifyTableState *mtstate,
 static int multicornExecForeignInsert(ResultRelInfo *resultRelInfo,
 						   HeapTuple tuple);
 static int multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
-						   Datum rowid);
+						   const char *rowid);
 static int multicornExecForeignUpdate(ResultRelInfo *resultRelInfo,
-						   Datum rowid,
+						   const char *rowid,
 						   HeapTuple tuple);
 static void multicornEndForeignModify(ResultRelInfo *resultRelInfo);
 
@@ -185,10 +185,14 @@ multicornGetForeignRelWidth(PlannerInfo *root,
 	AttrNumber	rv;
 	MulticornPlanState *planstate = palloc0(sizeof(MulticornPlanState));
 
+	planstate->fdw_instance = getInstance(foreignrel->rd_id);
 	planstate->rowid_attnum = get_pseudo_rowid_column(baserel, targetList);
 	if (planstate->rowid_attnum != InvalidAttrNumber)
 	{
+		/* We need a pseudo-rowid column. */
+		/* Ask the python implementation what attribute should be used. */
 		rv = planstate->rowid_attnum;
+		planstate->rowid_attname = getRowIdColumn(planstate->fdw_instance);
 	}
 	else
 	{
@@ -213,26 +217,31 @@ multicornGetForeignRelSize(PlannerInfo *root,
 	MulticornPlanState *planstate = baserel->fdw_private;
 	ForeignTable *ftable = GetForeignTable(foreigntableid);
 	ListCell   *lc;
+
 	planstate->foreigntableid = foreigntableid;
 	/* Initialize the conversion info array */
 	{
 		Relation	rel = RelationIdGetRelation(ftable->relid);
 		AttInMetadata *attinmeta = TupleDescGetAttInMetadata(rel->rd_att);
+
 		planstate->cinfos = palloc0(sizeof(ConversionInfo *) *
 									planstate->numattrs);
-		initConversioninfo(planstate->cinfos, attinmeta);
+		initConversioninfo(planstate->cinfos, attinmeta,
+						   planstate->rowid_attnum, planstate->rowid_attname);
 		RelationClose(rel);
 	}
 
-	planstate->fdw_instance = getInstance(foreigntableid);
 	/* Pull "var" clauses to build an appropriate target list */
 	foreach(lc, extractColumns(root, baserel))
 	{
 		Var		   *var = (Var *) lfirst(lc);
+		Value	   *colname = colnameFromVar(var, root, planstate);
 
 		/* Store only a Value node containing the string name of the column. */
-		planstate->target_list = lappend(planstate->target_list,
-										 colnameFromVar(var, root));
+		if (colname != NULL)
+		{
+			planstate->target_list = lappend(planstate->target_list, colname);
+		}
 	}
 	foreach(lc, baserel->baserestrictinfo)
 	{
@@ -332,7 +341,8 @@ multicornBeginForeignScan(ForeignScanState *node, int eflags)
 		execstate->nulls = palloc(sizeof(bool) * tupdesc->natts);
 		execstate->attinmeta = TupleDescGetAttInMetadata(tupdesc);
 	}
-	initConversioninfo(execstate->cinfos, execstate->attinmeta);
+	initConversioninfo(execstate->cinfos, execstate->attinmeta,
+					   execstate->rowid_attnum, execstate->rowid_attname);
 	node->fdw_state = execstate;
 }
 
@@ -430,6 +440,18 @@ multicornPlanForeignModify(PlannerInfo *root,
 						   Index resultRelation,
 						   Plan *subplan)
 {
+	MulticornModifyState *modstate = palloc0(sizeof(MulticornModifyState));
+	RangeTblEntry *rte = root->simple_rte_array[resultRelation];
+	Relation	rel = RelationIdGetRelation(rte->relid);
+
+	modstate->attinmeta = TupleDescGetAttInMetadata(rel->rd_att);
+	modstate->cinfos = palloc0(sizeof(ConversionInfo *) *
+							   modstate->attinmeta->tupdesc->natts);
+	initConversioninfo(modstate->cinfos, modstate->attinmeta,
+					   -1, "");
+	modstate->fdw_instance = getInstance(rte->relid);
+	RelationClose(rel);
+	return lappend(NULL, modstate);
 }
 
 /*
@@ -443,6 +465,7 @@ multicornBeginForeignModify(ModifyTableState *mtstate,
 							Plan *subplan,
 							int eflags)
 {
+	resultRelInfo->ri_fdw_state = linitial(fdw_private);
 }
 
 /*
@@ -454,6 +477,14 @@ static int
 multicornExecForeignInsert(ResultRelInfo *resultRelInfo,
 						   HeapTuple tuple)
 {
+	MulticornModifyState *modstate = resultRelInfo->ri_fdw_state;
+	PyObject   *fdw_instance = modstate->fdw_instance;
+	PyObject   *values = heapTupleToPyObject(tuple, modstate);
+
+	PyObject_CallMethod(fdw_instance, "insert", "(O)", values);
+	errorCheck();
+	Py_DECREF(values);
+	return 1;
 }
 
 /*
@@ -464,8 +495,14 @@ multicornExecForeignInsert(ResultRelInfo *resultRelInfo,
  */
 static int
 multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
-						   Datum rowid)
+						   const char *rowid)
 {
+	MulticornModifyState *modstate = resultRelInfo->ri_fdw_state;
+	PyObject   *fdw_instance = modstate->fdw_instance;
+
+	PyObject_CallMethod(fdw_instance, "delete", "(O)", rowid);
+	errorCheck();
+	return 1;
 }
 
 /*
@@ -476,9 +513,18 @@ multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
  */
 static int
 multicornExecForeignUpdate(ResultRelInfo *resultRelInfo,
-						   Datum rowid,
+						   const char *rowid,
 						   HeapTuple tuple)
 {
+	MulticornModifyState *modstate = resultRelInfo->ri_fdw_state;
+	PyObject   *fdw_instance = modstate->fdw_instance;
+	PyObject   *values = heapTupleToPyObject(tuple, modstate);
+
+	PyObject_CallMethod(fdw_instance, "update", "(O,O)", (PyObject *) rowid,
+						values);
+	errorCheck();
+	Py_DECREF(values);
+	return 1;
 }
 
 /*
@@ -499,11 +545,14 @@ void *
 serializePlanState(MulticornPlanState * state)
 {
 	List	   *result = NULL;
+
 	result = lappend_int(result, state->numattrs);
 	result = lappend_int(result, state->foreigntableid);
 	result = lappend(result, state->target_list);
 	result = lappend(result, state->qual_list);
 	result = lappend(result, state->param_list);
+	result = lappend_int(result, state->rowid_attnum);
+	result = lappend(result, makeString(state->rowid_attname));
 	return result;
 }
 
@@ -524,6 +573,8 @@ initializeExecState(void *internalstate)
 	execstate->target_list = copyObject(lthird(values));
 	execstate->qual_list = copyObject(lfourth(values));
 	execstate->param_list = copyObject(list_nth(values, 4));
+	execstate->rowid_attnum = list_nth_int(values, 5);
+	execstate->rowid_attname = strVal(list_nth(values, 6));
 	execstate->fdw_instance = getInstance(foreigntableid);
 	execstate->numattrs = attnum;
 	execstate->buffer = makeStringInfo();

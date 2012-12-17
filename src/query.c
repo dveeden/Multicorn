@@ -88,25 +88,37 @@ extractColumns(PlannerInfo *root, RelOptInfo *baserel)
  * objects back to suitable postgresql data structures.
  */
 void
-initConversioninfo(ConversionInfo ** cinfos, AttInMetadata *attinmeta)
+initConversioninfo(ConversionInfo ** cinfos, AttInMetadata *attinmeta,
+				   AttrNumber rowid_attnum, char *rowid_attname)
 {
 	int			i;
 
 	for (i = 0; i < attinmeta->tupdesc->natts; i++)
 	{
 		Form_pg_attribute attr = attinmeta->tupdesc->attrs[i];
-		if(!attr->attisdropped)
+
+		if (!attr->attisdropped)
 		{
 			ConversionInfo *cinfo = palloc0(sizeof(ConversionInfo));
+
 			cinfo->atttypoid = attr->atttypid;
 			cinfo->atttypmod = attinmeta->atttypmods[i];
 			cinfo->attioparam = attinmeta->attioparams[i];
 			cinfo->attinfunc = &attinmeta->attinfuncs[i];
 			cinfo->encodingname = getEncodingFromAttribute(attr);
-			cinfo->attrname = NameStr(attr->attname);
+			if (attr->attnum == rowid_attnum)
+			{
+				cinfo->attrname = rowid_attname;
+			}
+			else
+			{
+				cinfo->attrname = NameStr(attr->attname);
+			}
 			cinfo->attnum = i + 1;
 			cinfos[i] = cinfo;
-		} else {
+		}
+		else
+		{
 			cinfos[i] = NULL;
 		}
 	}
@@ -245,7 +257,7 @@ canonicalOpExpr(OpExpr *opExpr, RelOptInfo *baserel)
 		r = unnestClause(list_nth(opExpr->args, 1));
 		swapOperandsAsNeeded(&l, &r, &operatorid, baserel);
 	}
-	if (IsA(l, Var) && bms_is_member(((Var *) l)->varno, base_relids))
+	if (IsA(l, Var) &&bms_is_member(((Var *) l)->varno, base_relids))
 	{
 		result = (OpExpr *) make_opclause(operatorid,
 										  opExpr->opresulttype,
@@ -253,7 +265,7 @@ canonicalOpExpr(OpExpr *opExpr, RelOptInfo *baserel)
 										  (Expr *) l, (Expr *) r,
 										  opExpr->opcollid,
 										  opExpr->inputcollid);
-	} 
+	}
 	return result;
 }
 
@@ -474,14 +486,18 @@ extractClauseFromNullTest(PlannerInfo *root,
  *	Returns a "Value" node containing the string name of the column from a var.
  */
 Value *
-colnameFromVar(Var *var, PlannerInfo *root)
+colnameFromVar(Var *var, PlannerInfo *root, MulticornPlanState * planstate)
 {
 	RangeTblEntry *rte = root->simple_rte_array[var->varno];
 	char	   *attname = get_attname(rte->relid, var->varattno);
 
+	if (var->varattno == planstate->rowid_attnum)
+	{
+		return makeString(planstate->rowid_attname);
+	}
 	if (attname == NULL)
 	{
-		return makeString("");
+		return NULL;
 	}
 	else
 	{

@@ -37,13 +37,14 @@ typedef struct ConversionInfo
 typedef struct MulticornPlanState
 {
 	Oid			foreigntableid;
-	AttrNumber	rowid_attnum;
 	AttrNumber	numattrs;
 	PyObject   *fdw_instance;
 	List	   *target_list;
 	List	   *qual_list;
 	List	   *param_list;
 	ConversionInfo **cinfos;
+	AttrNumber	rowid_attnum;
+	char	   *rowid_attname;
 }	MulticornPlanState;
 
 typedef struct MulticornExecState
@@ -59,10 +60,20 @@ typedef struct MulticornExecState
 	Datum	   *values;
 	bool	   *nulls;
 	AttrNumber	numattrs;
+	AttrNumber	rowid_attnum;
+	char	   *rowid_attname;
 	ConversionInfo **cinfos;
 	/* Common buffer to avoid repeated allocations */
 	StringInfo	buffer;
 }	MulticornExecState;
+
+typedef struct MulticornModifyState
+{
+	AttrNumber	rowid_attnum;
+	AttInMetadata *attinmeta;
+	ConversionInfo **cinfos;
+	PyObject   *fdw_instance;
+}	MulticornModifyState;
 
 /*	errors.c */
 void		errorCheck(void);
@@ -71,10 +82,12 @@ bool		try_except(char *exceptionname);
 /* python.c */
 PyObject   *getInstance(Oid foreigntableid);
 PyObject   *qualToPyObject(Expr *expr, PlannerInfo *root);
+char	   *getRowIdColumn(PyObject *fdw_instance);
 PyObject   *getClassString(char *className);
 PyObject   *execute(ForeignScanState *state);
 void pythonResultToTuple(PyObject *p_value,
 					MulticornExecState * state);
+PyObject   *heapTupleToPyObject(HeapTuple tuple, MulticornModifyState * state);
 
 void getRelSize(MulticornPlanState * state,
 		   PlannerInfo *root,
@@ -92,9 +105,12 @@ void extractRestrictions(PlannerInfo *root,
 					List **params);
 List	   *extractColumns(PlannerInfo *root, RelOptInfo *baserel);
 void initConversioninfo(ConversionInfo ** cinfo,
-				   AttInMetadata *attinmeta);
-Value	   *colnameFromVar(Var *var, PlannerInfo *root);
+				   AttInMetadata *attinmeta, AttrNumber rowid_attnum,
+				   char *rowid_attname);
+Value *colnameFromVar(Var *var, PlannerInfo *root,
+			   MulticornPlanState * state);
 
-void		findPaths(PlannerInfo *root, RelOptInfo *baserel, List *possiblePaths);
+void findPaths(PlannerInfo *root, RelOptInfo *baserel,
+		  List *possiblePaths);
 
 #endif   /* PG_MULTICORN_H */
