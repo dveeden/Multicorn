@@ -223,7 +223,6 @@ multicornGetForeignRelSize(PlannerInfo *root,
 	{
 		Relation	rel = RelationIdGetRelation(ftable->relid);
 		AttInMetadata *attinmeta = TupleDescGetAttInMetadata(rel->rd_att);
-
 		planstate->cinfos = palloc0(sizeof(ConversionInfo *) *
 									planstate->numattrs);
 		initConversioninfo(planstate->cinfos, attinmeta,
