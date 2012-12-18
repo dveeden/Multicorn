@@ -223,6 +223,7 @@ multicornGetForeignRelSize(PlannerInfo *root,
 	{
 		Relation	rel = RelationIdGetRelation(ftable->relid);
 		AttInMetadata *attinmeta = TupleDescGetAttInMetadata(rel->rd_att);
+
 		planstate->cinfos = palloc0(sizeof(ConversionInfo *) *
 									planstate->numattrs);
 		initConversioninfo(planstate->cinfos, attinmeta,
@@ -497,9 +498,11 @@ multicornExecForeignDelete(ResultRelInfo *resultRelInfo,
 						   const char *rowid)
 {
 	MulticornModifyState *modstate = resultRelInfo->ri_fdw_state;
-	PyObject   *fdw_instance = modstate->fdw_instance;
+	PyObject   *fdw_instance = modstate->fdw_instance,
+			   *p_rowid = deserializeRowId((Datum) rowid);
 
-	PyObject_CallMethod(fdw_instance, "delete", "(O)", rowid);
+	PyObject_CallMethod(fdw_instance, "delete", "(O)", p_rowid);
+	Py_DECREF(p_rowid);
 	errorCheck();
 	return 1;
 }
@@ -516,11 +519,13 @@ multicornExecForeignUpdate(ResultRelInfo *resultRelInfo,
 						   HeapTuple tuple)
 {
 	MulticornModifyState *modstate = resultRelInfo->ri_fdw_state;
-	PyObject   *fdw_instance = modstate->fdw_instance;
-	PyObject   *values = heapTupleToPyObject(tuple, modstate);
+	PyObject   *fdw_instance = modstate->fdw_instance,
+			   *values = heapTupleToPyObject(tuple, modstate),
+			   *p_rowid = deserializeRowId((Datum) rowid);
 
-	PyObject_CallMethod(fdw_instance, "update", "(O,O)", (PyObject *) rowid,
+	PyObject_CallMethod(fdw_instance, "update", "(O,O)", p_rowid,
 						values);
+	Py_DECREF(p_rowid);
 	errorCheck();
 	Py_DECREF(values);
 	return 1;

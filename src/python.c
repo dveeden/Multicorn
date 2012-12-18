@@ -42,6 +42,9 @@ PyObject   *datumTimestampToPython(Datum datum, ConversionInfo * cinfo);
 PyObject   *datumIntToPython(Datum datum, ConversionInfo * cinfo);
 PyObject   *datumArrayToPython(Datum datum, ConversionInfo * cinfo);
 
+Datum		serializeRowid(PyObject *pyobject);
+
+
 
 
 void pythonDictToTuple(PyObject *p_value,
@@ -655,9 +658,8 @@ pythonDictToTuple(PyObject *p_value,
 			resetStringInfo(state->buffer);
 			if (state->rowid_attnum >= 0 && i == state->rowid_attnum - 1)
 			{
-				/* Store the pyobject directly, since postgresql HAS to keep */
-				/* it safe for us. */
-				state->values[i] = (Datum) p_object;
+				/* Store the pyobject as (pickle) serialized string */
+				state->values[i] = serializeRowid(p_object);
 			}
 			else
 			{
@@ -1038,5 +1040,54 @@ heapTupleToPyObject(HeapTuple tuple, MulticornModifyState * state)
 		PyDict_SetItemString(result, state->cinfos[i]->attrname, item);
 		Py_DECREF(item);
 	}
+	return result;
+}
+
+/*
+ * Serialize an arbitrary pyobject to a datum data structure.
+ * The internal representation is a pickle string.
+ */
+Datum
+serializeRowid(PyObject *pyobject)
+{
+	Datum		datum;
+	PyObject   *cpickle_module = PyImport_ImportModule("cPickle"),
+			   *dumps = PyObject_GetAttrString(cpickle_module, "dumps"),
+			   *pickled = PyObject_CallFunctionObjArgs(dumps, pyobject, NULL);
+	ssize_t		size;
+	char	   *buffer;
+
+	errorCheck();
+	PyString_AsStringAndSize(pickled, &buffer, &size);
+	errorCheck();
+	datum = PointerGetDatum(cstring_to_text_with_len(buffer, size));
+	Py_DECREF(pickled);
+	Py_DECREF(cpickle_module);
+	Py_DECREF(dumps);
+	return datum;
+}
+
+/*
+ * Unserialize a datum to a pyobject.
+ * The internal representation is a pickle string.
+ */
+PyObject *
+deserializeRowId(Datum datum)
+{
+	text	   *value = (text *) DatumGetPointer(datum);
+	ssize_t		size = VARSIZE_ANY(value);
+	PyObject   *cpickle_module = PyImport_ImportModule("cPickle"),
+			   *loads = PyObject_GetAttrString(cpickle_module, "loads"),
+			   *p_string,
+			   *result;
+	char	   *buffer = palloc(size * sizeof(char));
+
+	text_to_cstring_buffer(value, buffer, size);
+	p_string = PyString_FromStringAndSize(buffer, size);
+	result = PyObject_CallFunctionObjArgs(loads, p_string, NULL);
+	Py_DECREF(cpickle_module);
+	Py_DECREF(p_string);
+	Py_DECREF(loads);
+	pfree(buffer);
 	return result;
 }

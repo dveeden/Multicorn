@@ -88,6 +88,7 @@ PyObject   *execute(ForeignScanState *state);
 void pythonResultToTuple(PyObject *p_value,
 					MulticornExecState * state);
 PyObject   *heapTupleToPyObject(HeapTuple tuple, MulticornModifyState * state);
+PyObject   *deserializeRowId(Datum datum);
 
 void getRelSize(MulticornPlanState * state,
 		   PlannerInfo *root,
