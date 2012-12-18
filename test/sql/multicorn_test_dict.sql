@@ -16,6 +16,6 @@ CREATE foreign table testmulticorn (
 -- Test "normal" usage
 select * from testmulticorn;
 
-select test1 -> 'repeater' from testmulticorn;
+select test1 -> 'repeater' as r from testmulticorn order by r;
 
 DROP EXTENSION multicorn cascade;

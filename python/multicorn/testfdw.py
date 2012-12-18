@@ -31,7 +31,7 @@ class TestForeignDataWrapper(ForeignDataWrapper):
                                               next(random_thing), index))
             else:
                 line = {}
-                for column_name in columns:
+                for column_name in self.columns:
                     if self.test_type == 'list':
                         line[column_name] = [column_name, next(random_thing),
                                              index]
@@ -67,5 +67,7 @@ class TestForeignDataWrapper(ForeignDataWrapper):
         log_to_postgres("DELETING: %s" % rowid)
 
     def insert(self, values):
+        if self.rowid_column is None:
+            super(TestForeignDataWrapper, self).insert(values)
         log_to_postgres("INSERTING: %s" % values)
 
