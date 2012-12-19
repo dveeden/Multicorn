@@ -101,7 +101,7 @@ List	   *pathKeys(MulticornPlanState * state);
 /* query.c */
 void extractRestrictions(PlannerInfo *root,
 					RelOptInfo *baserel,
-					RestrictInfo *restrictinfo,
+					Expr *node,
 					List **quals,
 					List **params);
 List	   *extractColumns(PlannerInfo *root, RelOptInfo *baserel);
