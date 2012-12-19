@@ -238,11 +238,12 @@ multicornGetForeignRelSize(PlannerInfo *root,
 		Value	   *colname = colnameFromVar(var, root, planstate);
 
 		/* Store only a Value node containing the string name of the column. */
-		if (colname != NULL)
+		if (colname != NULL && strVal(colname) != NULL)
 		{
 			planstate->target_list = lappend(planstate->target_list, colname);
 		}
 	}
+	/* Extract the restrictions from the plan. */
 	foreach(lc, baserel->baserestrictinfo)
 	{
 		extractRestrictions(root, baserel, (RestrictInfo *) lfirst(lc),
@@ -250,7 +251,6 @@ multicornGetForeignRelSize(PlannerInfo *root,
 							&planstate->param_list);
 
 	}
-	/* Extract the restrictions from the plan. */
 	/* Inject the "rows" and "width" attribute into the baserel */
 	getRelSize(planstate, root, &baserel->rows, &baserel->width);
 }
